@@ -91,5 +91,7 @@ curl -X POST http://localhost:5000/shorten -H 'Content-Type: application/json' -
 Shortly provides a simple and efficient solution for URL shortening while incorporating essential features like expiration handling and duplicate prevention. It is lightweight, easy to set up, and suitable for both personal and small-scale business use cases. By leveraging Flask and SQLite, Shortly ensures quick deployment and reliable performance. Future enhancements could include analytics, custom short URLs, and enhanced security features to improve usability and functionality.
 
 ## License
+[![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 This project is licensed under the MIT License.
 
