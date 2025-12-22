@@ -8,16 +8,16 @@ def is_valid_url(url):
         re.IGNORECASE
     )
     return re.match(regex, url) is not None
-# ✅ Test URLs
+# Test URLs
 test_urls = [
     "https://www.google.com",
     "http://example.com",
     "https://sub.domain.com",
-    "www.facebook.com",  # ❌ Invalid (missing "http://")
-    "random text",  # ❌ Invalid (not a URL)
-    "ftp://fileserver.com",  # ❌ Invalid (FTP is not allowed)
-    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # ✅ Valid with path
-    "http://localhost:5000",  # ✅ Valid (localhost allowed)
+    "www.facebook.com",  # Invalid (missing "http://")
+    "random text",  # Invalid (not a URL)
+    "ftp://fileserver.com",  # Invalid (FTP is not allowed)
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # Valid with path
+    "http://localhost:5000",  # Valid (localhost allowed)
 ]
 print("Starting URL validation...\n")
 # 🔹 Loop through URLs and print results
@@ -26,3 +26,4 @@ for url in test_urls:
         print(f"✅ Valid: {url}")
     else:
         print(f"❌ Invalid: {url}")
+
