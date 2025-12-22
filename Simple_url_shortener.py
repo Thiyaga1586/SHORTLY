@@ -107,12 +107,10 @@ def rate_limit_guard():
 
 @app.before_request
 def before_every_request():
-    # Only rate limit the /shorten endpoint (can expand later)
-    if request.endpoint == "shorten_url":
+    if request.path == "/shorten" and request.method == "POST":
         limited = rate_limit_guard()
         if limited:
             return limited
-
 
 # DB Helpers (fresh connection per request) 
 def get_db():
@@ -399,3 +397,4 @@ def info(short_id):
 
 if __name__ == "__main__":
     app.run()
+
