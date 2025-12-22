@@ -2,6 +2,7 @@ from flask import Flask  # Web framework for creating API's
 from flask import request  # Handles incoming data (eg.JSON requests)
 from flask import jsonify  # Converts python dictionaries into JSON responses
 from flask import redirect  # Sends the user to another URL when they visit a route
+from flask import render_template_string  # for small frontend page 
 
 import os
 
@@ -16,9 +17,70 @@ from urllib.parse import urlparse  # More reliable URL validation than regex
 from datetime import datetime, timedelta  # handles expiry dates for URLs
 
 app = Flask(__name__)  # creates a flask app instance allowing us to define API routes
+# Simple frontend (so opening / doesn't show "Not Found")
+# Keeps it lightweight: no React, no templates folder, just one clean page.
+HOME_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>SHORTLY</title>
+</head>
+<body style="font-family: Arial; max-width: 720px; margin: 40px auto;">
+  <h2>SHORTLY</h2>
+  <p>Paste a long URL and get a short link.</p>
+
+  <form id="f">
+    <input id="url" placeholder="https://example.com" style="width:100%; padding:10px;" required />
+    <div style="margin-top:10px;">
+      <input id="days" type="number" value="7" min="1" max="365" style="width:120px; padding:8px;" />
+      <button style="padding:8px 14px;">Shorten</button>
+    </div>
+  </form>
+
+  <div id="out" style="margin-top:18px;"></div>
+
+<script>
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const org_url = document.getElementById("url").value;
+  const expiry_days = parseInt(document.getElementById("days").value, 10);
+
+  const res = await fetch("/shorten", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({org_url, expiry_days})
+  });
+
+  const data = await res.json();
+  const out = document.getElementById("out");
+
+  if (!res.ok) {
+    out.innerHTML = "<p style='color:red;'>" + (data.error || "Error") + "</p>";
+    return;
+  }
+
+  out.innerHTML = `
+    <p><b>Short URL:</b> <a href="${data.short_url}" target="_blank">${data.short_url}</a></p>
+    <p><b>Expires at:</b> ${data.expires_at}</p>
+    <button id="copy">Copy</button>
+  `;
+
+  document.getElementById("copy").onclick = async () => {
+    await navigator.clipboard.writeText(data.short_url);
+    alert("Copied!");
+  };
+});
+</script>
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET"])
+def home():
+    return render_template_string(HOME_HTML)
 
 DB_NAME = os.getenv("SHORTLY_DB", "urls.db")  # lets tests use a temporary DB  # Database name
-BASE_URL = "http://localhost:5000"  # Change this when deploying 
 
 # Rate Limiting (simple + effective) 
 # Why: prevents spam / brute forcing short ids (recruiters love this)
