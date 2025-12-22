@@ -1,29 +1,43 @@
-import re
+from urllib.parse import urlparse  # better than regex for URL parsing
 
-def is_valid_url(url):
-    regex = re.compile(
-        r'^(https?://)?'  # Optional http or https
-        r'(([A-Za-z0-9-]+\.)+[A-Za-z]{2,6})'  # Domain name
-        r'(:\d+)?(/.*)?$',  # Optional port and path
-        re.IGNORECASE
-    )
-    return re.match(regex, url) is not None
+def normalize_url(url):
+    url = (url or "").strip()
+    if not url:
+        return None
+
+    # if scheme missing, add https by default
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    parsed = urlparse(url)
+
+    # allow only http/https
+    if parsed.scheme not in ("http", "https"):
+        return None
+
+    # must have a host
+    if not parsed.netloc:
+        return None
+
+    return url
+
 # Test URLs
 test_urls = [
     "https://www.google.com",
     "http://example.com",
     "https://sub.domain.com",
-    "www.facebook.com",  # Invalid (missing "http://")
-    "random text",  # Invalid (not a URL)
-    "ftp://fileserver.com",  # Invalid (FTP is not allowed)
-    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # Valid with path
-    "http://localhost:5000",  # Valid (localhost allowed)
+    "www.facebook.com",  # now becomes https://www.facebook.com
+    "random text",  # invalid
+    "ftp://fileserver.com",  # invalid scheme
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",  # valid
+    "http://localhost:5000",  # valid
 ]
-print("Starting URL validation...\n")
-# 🔹 Loop through URLs and print results
-for url in test_urls:
-    if is_valid_url(url):
-        print(f"✅ Valid: {url}")
-    else:
-        print(f"❌ Invalid: {url}")
 
+print("Starting URL validation...\n")
+
+for url in test_urls:
+    normalized = normalize_url(url)
+    if normalized:
+        print(f"Valid: {url}  -> normalized: {normalized}")
+    else:
+        print(f"Invalid: {url}")
