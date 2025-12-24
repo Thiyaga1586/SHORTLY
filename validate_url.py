@@ -21,7 +21,6 @@ def normalize_url(url):
 
     return url
 
-# Test URLs
 test_urls = [
     "https://www.google.com",
     "http://example.com",
@@ -41,3 +40,4 @@ for url in test_urls:
         print(f"Valid: {url}  -> normalized: {normalized}")
     else:
         print(f"Invalid: {url}")
+
