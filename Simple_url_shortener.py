@@ -1,24 +1,23 @@
-from flask import Flask  # Web framework for creating API's
-from flask import request  # Handles incoming data (eg.JSON requests)
-from flask import jsonify  # Converts python dictionaries into JSON responses
-from flask import redirect  # Sends the user to another URL when they visit a route
-from flask import render_template_string  # for small frontend page 
+from flask import Flask  
+from flask import request 
+from flask import jsonify  
+from flask import redirect  
+from flask import render_template_string
 
 import os
 
-import sqlite3  # Connects to a SQLite database to store and redirect to urls
-import secrets  # Better random token generation than slicing UUID
-import string  # Used for base62 short codes (letters + digits)
-import time  # For rate limiting + background cleanup
-import threading  # For cleanup job (removing expired urls)
-from collections import defaultdict, deque  # Used for simple in-memory rate limiter
-from urllib.parse import urlparse  # More reliable URL validation than regex
+import sqlite3  
+import secrets  
+import string  
+import time  
+import threading 
+from collections import defaultdict, deque 
+from urllib.parse import urlparse 
 
-from datetime import datetime, timedelta  # handles expiry dates for URLs
+from datetime import datetime, timedelta  
 
-app = Flask(__name__)  # creates a flask app instance allowing us to define API routes
-# Simple frontend (so opening / doesn't show "Not Found")
-# Keeps it lightweight: no React, no templates folder, just one clean page.
+app = Flask(__name__) 
+# simple frontend (so opening doesn't show "Not Found")
 HOME_HTML = """
 <!doctype html>
 <html>
@@ -80,13 +79,12 @@ document.getElementById("f").addEventListener("submit", async (e) => {
 def home():
     return render_template_string(HOME_HTML)
 
-DB_NAME = os.getenv("SHORTLY_DB", "urls.db")  # lets tests use a temporary DB  # Database name
+DB_NAME = os.getenv("SHORTLY_DB", "urls.db")  
 
-# Rate Limiting (simple + effective) 
-# Why: prevents spam / brute forcing short ids (recruiters love this)
-RATE_LIMIT = 30  # max requests
-RATE_WINDOW_SEC = 60  # per 60 seconds
-request_log = defaultdict(deque)  # stores timestamps per IP
+# rate limiting prevents spam / brute forcing short ids (reduces time complexity increase in efficiency)
+RATE_LIMIT = 30  
+RATE_WINDOW_SEC = 60  
+request_log = defaultdict(deque)  # stores timestamps per ip
 
 
 def rate_limit_guard():
@@ -112,24 +110,20 @@ def before_every_request():
         if limited:
             return limited
 
-# DB Helpers (fresh connection per request) 
 def get_db():
-    # New connection per request helps avoid locked transactions in sqlite
+    # new connection per request helps avoid locked transactions in sqlite
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # allows dict-like access
 
-    # WAL mode helps concurrency (reads don't block writes)
+    # WAL mode -> reads don't block writes
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
-
-# Create tables + upgrade old DB schema if needed
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
 
-    # Create the table if it doesn't exist
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS urls (
             id TEXT PRIMARY KEY,
@@ -139,16 +133,14 @@ def init_db():
         )
     """)
 
-    # Ensure columns exist (older databases)
     cursor.execute("PRAGMA table_info(urls)")
-    columns = [col[1] for col in cursor.fetchall()]  # Extract column names
+    columns = [col[1] for col in cursor.fetchall()]
 
     # expiry column already handled in your old version, keeping it
     if "expires_at" not in columns:
         cursor.execute("ALTER TABLE urls ADD COLUMN expires_at TEXT")
         conn.commit()
 
-    # WOW additions: analytics
     if "click_count" not in columns:
         cursor.execute("ALTER TABLE urls ADD COLUMN click_count INTEGER DEFAULT 0")
         conn.commit()
@@ -156,8 +148,7 @@ def init_db():
     if "last_accessed" not in columns:
         cursor.execute("ALTER TABLE urls ADD COLUMN last_accessed TEXT")
         conn.commit()
-
-    # indexes for performance (fast lookup + cleanup)
+      
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_org_url ON urls(org_url)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_expires_at ON urls(expires_at)")
 
@@ -165,10 +156,8 @@ def init_db():
     conn.close()
 
 
-init_db()  # initialize schema once at startup
+init_db()  
 
-
-# Short code generator (base62) 
 BASE62 = string.ascii_letters + string.digits  # a-zA-Z0-9
 
 
@@ -185,13 +174,10 @@ def generate_unique_short_id(conn, length=7):
         cursor.execute("SELECT 1 FROM urls WHERE id=?", (short_id,))
         if cursor.fetchone() is None:
             return short_id
-    # if unlucky, just increase length
+    # if already exist, just increase length
     return generate_short_url(length + 1)
 
-
-# URL Validation (more reliable than regex)
 def normalize_url(org_url):
-    # accepts "www.google.com" and converts to "https://www.google.com"
     if org_url is None:
         raise ValueError("URL is required")
 
@@ -227,7 +213,6 @@ def parse_expiry_days(expiry_days):
     return expiry_days
 
 
-# Background cleanup job (deletes expired urls)
 def cleanup_expired_urls_forever(interval_sec=300):
     # run every 5 minutes by default
     while True:
@@ -259,16 +244,15 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
-@app.route("/shorten", methods=["POST"])  # Flask decorator which accepts post request to shorten url
+@app.route("/shorten", methods=["POST"])  # accepts post request to shorten url
 def shorten_url():
-    conn = get_db()  # new connection per request
-    cursor = conn.cursor()  # New pointer to fetch data
+    conn = get_db()  
+    cursor = conn.cursor()
 
     data = request.get_json(silent=True) or {}  # safer if body is empty
-    org_url_raw = data.get("org_url")  # Extract original url from the json
-    expiry_days_raw = data.get("expiry_days", 7)  # Get expiry days if exist or set it to 7 (default)
+    org_url_raw = data.get("org_url")  
+    expiry_days_raw = data.get("expiry_days", 7)  
 
-    # validate + normalize url
     try:
         org_url = normalize_url(org_url_raw)
         expiry_days = parse_expiry_days(expiry_days_raw)
@@ -276,7 +260,7 @@ def shorten_url():
         conn.close()
         return jsonify({"error": str(e)}), 400
 
-    # check duplicate (reuse short url for same org_url if still valid)
+    # check duplicate
     cursor.execute("SELECT id, expires_at FROM urls WHERE org_url=?", (org_url,))
     existing = cursor.fetchone()
 
@@ -287,7 +271,7 @@ def shorten_url():
         short_id = existing["id"]
         existing_exp = existing["expires_at"]
 
-        # if expired already, replace it with a new one (cleaner user experience)
+        # if expired already, replace it with a new one
         if existing_exp:
             try:
                 exp_dt = datetime.strptime(existing_exp, "%Y-%m-%d %H:%M:%S.%f")
@@ -302,14 +286,13 @@ def shorten_url():
                 existing = None
 
         if existing:
-            # extend expiry on reuse (nice feature)
+            # extend expiry on reuse 
             cursor.execute("UPDATE urls SET expires_at=? WHERE id=?", (expiry_date, short_id))
             conn.commit()
             conn.close()
             base_url = request.host_url.rstrip("/")   # auto-detects host (localhost / render / railway)
             return jsonify({"short_url": f"{base_url}/{short_id}", "expires_at": expiry_date}), 200
 
-    # create fresh short id
     short_id = generate_unique_short_id(conn, length=7)
 
     cursor.execute(
@@ -323,7 +306,7 @@ def shorten_url():
     return jsonify({"short_url": f"{base_url}/{short_id}", "expires_at": expiry_date}), 201
 
 
-@app.route("/<short_id>", methods=["GET"])  # Handles get request for shortened url
+@app.route("/<short_id>", methods=["GET"])  # get request for shortened url
 def get_original_url(short_id):
     conn = get_db()
     cursor = conn.cursor()
@@ -338,7 +321,6 @@ def get_original_url(short_id):
     original_url = result["org_url"]
     expires_at = result["expires_at"]
 
-    # expiry check
     if expires_at:
         try:
             exp_dt = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S.%f")
@@ -352,9 +334,8 @@ def get_original_url(short_id):
             cursor.execute("DELETE FROM urls WHERE id=?", (short_id,))
             conn.commit()
             conn.close()
-            return jsonify({"error": "Short URL expired"}), 410
-
-    # analytics (click count + last accessed)
+            return jsonify({"error": "Short URL expired"}), 41
+          
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     cursor.execute("""
         UPDATE urls
@@ -365,10 +346,10 @@ def get_original_url(short_id):
     conn.commit()
     conn.close()
 
-    return redirect(original_url)  # Redirect if still valid
+    return redirect(original_url)  # redirect if still valid (weblink with multiple redirection)
 
 
-@app.route("/api/info/<short_id>", methods=["GET"])  # recruiter-friendly endpoint (shows analytics)
+@app.route("/api/info/<short_id>", methods=["GET"])  
 def info(short_id):
     conn = get_db()
     cursor = conn.cursor()
@@ -397,4 +378,5 @@ def info(short_id):
 
 if __name__ == "__main__":
     app.run()
+
 
