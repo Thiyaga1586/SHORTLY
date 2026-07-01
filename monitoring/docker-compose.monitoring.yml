@@ -1,0 +1,66 @@
+version: "3.9"
+
+# Monitoring sidecar — run alongside the main stack:
+#   docker compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
+#
+# Grafana:    http://localhost:3000   (admin / admin)
+# Prometheus: http://localhost:9090
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: shortly-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: shortly-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/shortly.json:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.59.0
+    container_name: shortly-redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "9121:9121"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: shortly-pg-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_1?sslmode=disable"
+    ports:
+      - "9187:9187"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  shortly-net:
+    external: true
+    name: shortly_prod_shortly-net

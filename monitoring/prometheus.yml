@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: coordinator
+    static_configs:
+      - targets: [coordinator-1:5000, coordinator-2:5000, coordinator-3:5000]
+
+  - job_name: nodes
+    static_configs:
+      - targets: [node-1:5001, node-2:5002, node-3:5003]
+
+  - job_name: redis
+    static_configs:
+      - targets: [redis-exporter:9121]
+
+  - job_name: postgres
+    static_configs:
+      - targets: [postgres-exporter:9187]
+
+  - job_name: nginx
+    static_configs:
+      - targets: [nginx:80]
+    metrics_path: /nginx-health

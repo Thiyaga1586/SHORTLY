@@ -1,0 +1,203 @@
+
+# Shortly Distributed — Production Stack
+# ----------------------------------------
+# Topology:
+#
+#   [Client]
+#      │  HTTPS :443
+#   [nginx]  ←── rate limiting, TLS termination, /admin blocked
+#      │  least_conn
+#   [coordinator-1] [coordinator-2] [coordinator-3]  ← 3 replicas
+#      │  all share ring + cache via Redis
+#   [Redis]  ←── ring state (shortly:ring:*) + cache (shortly:url:*)
+#      │
+#   [node-1] [node-2] [node-3]   ← storage nodes
+#      │
+#   [pgbouncer]  ← connection pooler
+#      │
+#   [postgres]   ← one DB per node (shortly_node_1/2/3)
+
+x-coordinator-base: &coordinator-base
+  build:
+    context: .
+    dockerfile: coordinator/Dockerfile
+  environment:
+    CACHE_SIZE:           "2000"
+    CACHE_TTL:            "300"
+    VNODES_PER_NODE:      "150"
+    NODE_TIMEOUT_SEC:     "5"
+    NODE_RETRIES:         "1"
+    REDIS_URL:            "redis://redis:6379/0"
+    ADMIN_API_KEYS:       "${ADMIN_API_KEY:-changeme-set-in-env}"
+    COORDINATOR_REPLICAS: "3"
+    PORT:                 "5000"
+  depends_on:
+    redis:
+      condition: service_healthy
+  networks:
+    - shortly-net
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+
+x-node-base: &node-base
+  build:
+    context: .
+    dockerfile: node/Dockerfile
+  depends_on:
+    pgbouncer:
+      condition: service_started
+  networks:
+    - shortly-net
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "curl -f http://localhost:$${PORT:-5001}/health || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+
+services:
+
+  # ── infrastructure ────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: shortly-postgres
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - shortly-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    container_name: shortly-pgbouncer
+    # NOTE: pgbouncer.ini (mounted below) already defines all 3 logical
+    # databases (shortly_node_1/2/3) and is NOT overwritten by the image's
+    # entrypoint when it already exists at /etc/pgbouncer/pgbouncer.ini.
+    # No DATABASE_URL/POOL_MODE/etc env vars here on purpose — they would
+    # be misleading (DATABASE_URL can only point at ONE db) and unused.
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: shortly-redis
+    command: >
+      redis-server
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1
+        --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── coordinators (3 replicas) ─────────────────────────────────────────────
+
+  coordinator-1:
+    <<: *coordinator-base
+    container_name: shortly-coordinator-1
+    ports:
+      - "5001:5000"   # exposed for direct admin access (register_nodes.sh)
+
+  coordinator-2:
+    <<: *coordinator-base
+    container_name: shortly-coordinator-2
+    ports:
+      - "5002:5000"
+
+  coordinator-3:
+    <<: *coordinator-base
+    container_name: shortly-coordinator-3
+    ports:
+      - "5003:5000"
+
+  # ── storage nodes ─────────────────────────────────────────────────────────
+
+  node-1:
+    <<: *node-base
+    container_name: shortly-node-1
+    environment:
+      NODE_ID:      "node-1"
+      PORT:         "5001"
+      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_1"
+      DB_POOL_MIN:  "2"
+      DB_POOL_MAX:  "20"
+
+  node-2:
+    <<: *node-base
+    container_name: shortly-node-2
+    environment:
+      NODE_ID:      "node-2"
+      PORT:         "5002"
+      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_2"
+      DB_POOL_MIN:  "2"
+      DB_POOL_MAX:  "20"
+
+  node-3:
+    <<: *node-base
+    container_name: shortly-node-3
+    environment:
+      NODE_ID:      "node-3"
+      PORT:         "5003"
+      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_3"
+      DB_POOL_MIN:  "2"
+      DB_POOL_MAX:  "20"
+
+  # ── nginx (public gateway) ────────────────────────────────────────────────
+
+  nginx:
+    image: nginx:alpine
+    container_name: shortly-nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    ports:
+      - "8888:80"
+      - "9443:443"
+    depends_on:
+      - coordinator-1
+      - coordinator-2
+      - coordinator-3
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+networks:
+  shortly-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
