@@ -284,10 +284,10 @@ DASHBOARD_HTML = """
 <!doctype html><html><head>
 <meta charset="utf-8"/>
 <title>Shortly — Dashboard</title>
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="15">
 <style>
-body{font-family:monospace;max-width:1000px;margin:40px auto;background:#0f0f0f;color:#e0e0e0}
-h1{color:#7cf}h2{color:#aef;border-bottom:1px solid #333;padding-bottom:4px}
+body{font-family:monospace;max-width:1000px;margin:40px auto;background:#0f0f0f;color:#e0e0e0;padding:0 16px}
+h1{color:#7cf;margin-bottom:4px}h2{color:#aef;border-bottom:1px solid #333;padding-bottom:4px}
 table{width:100%;border-collapse:collapse;margin-bottom:24px}
 th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #222}
 th{background:#1a1a2e;color:#7cf}
@@ -295,10 +295,21 @@ th{background:#1a1a2e;color:#7cf}
 .ok{background:#1a4a1a;color:#6f6}.warn{background:#4a3a00;color:#fc0}.err{background:#4a1a1a;color:#f66}
 .section{background:#151515;padding:16px;border-radius:8px;margin-bottom:20px}
 a{color:#7cf}
+.tagline{color:#999;font-size:.95em;margin:6px 0 18px 0;line-height:1.5}
+.stack{color:#6ad;font-size:.85em}
+button{cursor:pointer;background:#2a4a8a;color:#fff;border:none;border-radius:4px}
+button:hover{background:#345aa8}
+input{background:#1a1a1a;border:1px solid #333;color:#e0e0e0;border-radius:4px}
+.copybtn{padding:6px 10px;font-size:.85em;margin-left:8px}
 </style></head><body>
-<h1>⚡ Shortly Distributed — Dashboard</h1>
+<h1>⚡ Shortly — Distributed URL Shortener</h1>
+<p class="tagline">
+  A horizontally-scaled URL shortener using consistent hashing across independent Flask nodes,
+  backed by PostgreSQL and a shared Redis cache.<br/>
+  <span class="stack">Flask · Gunicorn · PostgreSQL · Redis · Docker Compose · Cloudflare Tunnel</span>
+</p>
 <p style="color:#888">
-  Auto-refreshes every 5s &nbsp;|&nbsp;
+  Auto-refreshes every 15s &nbsp;|&nbsp;
   Redis: <span class="badge {{ 'ok' if redis_ok else 'err' }}">{{ 'connected' if redis_ok else 'DOWN' }}</span>
   &nbsp;|&nbsp; Nodes: {{ ring.total_nodes }}
 </p>
@@ -322,7 +333,8 @@ a{color:#7cf}
 <div class="section">
   <b>Capacity:</b> {{ cache.capacity }} &nbsp;
   <b>Live entries:</b> {{ cache.size }} &nbsp;
-  <span class="badge {{ 'ok' if cache.hit_rate > 0.5 else 'warn' }}">
+  <span class="badge {{ 'ok' if cache.hit_rate > 0.5 else 'warn' }}"
+        title="Low hit rate is expected with light/first-time demo traffic — each unique URL is only requested once or twice, so there's little to cache yet.">
     Hit rate: {{ (cache.hit_rate * 100)|round(1) }}%
   </span>
   <table style="margin-top:12px">
@@ -333,22 +345,41 @@ a{color:#7cf}
 
 <h2>Shorten a URL</h2>
 <div class="section">
-  <input id="url" placeholder="https://example.com" style="width:60%;padding:8px"/>
+  <input id="url" placeholder="https://example.com" style="width:55%;padding:8px"/>
   <input id="days" type="number" value="7" style="width:60px;padding:8px"/>
   <button onclick="doShorten()" style="padding:8px 14px">Shorten</button>
+  <button onclick="tryExample()" style="padding:8px 14px;background:#333" title="Fill in a sample URL and shorten it">Try an example</button>
   <div id="out" style="margin-top:12px;color:#6f6"></div>
 </div>
 <script>
-async function doShorten() {
+async function shortenUrl(url, days) {
   const res = await fetch("/shorten", {
     method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({org_url: document.getElementById("url").value,
-                          expiry_days: parseInt(document.getElementById("days").value)})
+    body: JSON.stringify({org_url: url, expiry_days: days})
   });
   const d = await res.json();
-  document.getElementById("out").innerHTML = res.ok
-    ? `<b>Short URL:</b> <a href="${d.short_url}" target="_blank">${d.short_url}</a>`
-    : `<span style="color:red">${d.error}</span>`;
+  const out = document.getElementById("out");
+  if (res.ok) {
+    out.innerHTML = `<b>Short URL:</b> <a href="${d.short_url}" target="_blank">${d.short_url}</a>` +
+      `<button class="copybtn" onclick="copyLink('${d.short_url}')">Copy</button>`;
+  } else {
+    out.innerHTML = `<span style="color:#f66">${d.error}</span>`;
+  }
+}
+function doShorten() {
+  shortenUrl(document.getElementById("url").value,
+             parseInt(document.getElementById("days").value));
+}
+function tryExample() {
+  document.getElementById("url").value = "https://github.com/";
+  shortenUrl("https://github.com/", 7);
+}
+function copyLink(link) {
+  navigator.clipboard.writeText(link);
+  const out = document.getElementById("out");
+  const original = out.innerHTML;
+  out.innerHTML += ` <span style="color:#aef">Copied!</span>`;
+  setTimeout(() => { out.innerHTML = original; }, 1500);
 }
 </script>
 </body></html>
