@@ -175,6 +175,17 @@ services:
       DB_POOL_MIN:  "2"
       DB_POOL_MAX:  "20"
 
+  # ── frontend (React + TypeScript, built and served via nginx) ────────────
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: shortly-frontend
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
   # ── nginx (public gateway) ────────────────────────────────────────────────
 
   nginx:
@@ -190,6 +201,7 @@ services:
       - coordinator-1
       - coordinator-2
       - coordinator-3
+      - frontend
     networks:
       - shortly-net
     restart: unless-stopped

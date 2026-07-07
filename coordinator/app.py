@@ -385,6 +385,19 @@ function copyLink(link) {
 </body></html>
 """
 
+@app.route("/api/stats")
+def api_stats():
+    """Public, read-only snapshot of ring + cache state for the frontend dashboard."""
+    ring_data = get_ring().stats()
+    cache_data = cache_snapshot(CACHE_CAPACITY)
+    from dataclasses import asdict as dc_asdict
+    return jsonify({
+        "redis_ok": redis_ping(),
+        "ring": dc_asdict(ring_data),
+        "cache": dc_asdict(cache_data),
+    }), 200
+
+
 @app.route("/")
 def dashboard():
     ring       = get_ring()
