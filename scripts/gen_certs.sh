@@ -18,7 +18,7 @@ echo "Generating self-signed cert for: $DOMAIN"
 echo "Output: $CERT_DIR/server.{crt,key}"
 
 openssl req -x509 -nodes -days 365 \
-  -newkey rsa:2048 \
+  -newkey rsa:3072 \
   -keyout "$CERT_DIR/server.key" \
   -out    "$CERT_DIR/server.crt" \
   -subj   "/CN=$DOMAIN/O=Shortly/C=US" \

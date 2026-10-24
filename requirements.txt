@@ -1,5 +1,6 @@
-flask>=3.0,<4
-gunicorn>=21,<23
-requests>=2.31,<3
-redis>=5.0,<6
-psycopg2-binary>=2.9,<3
+flask==3.1.1
+gunicorn==22.0.0
+requests==2.32.4
+redis==5.2.1
+psycopg2-binary==2.9.10
+prometheus-client==0.22.1

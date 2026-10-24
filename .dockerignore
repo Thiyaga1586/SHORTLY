@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+certs/
+postgres-data/
+redis-data/
+frontend/node_modules/
+frontend/dist/
+legacy/urls.db
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+benchmark/
+monitoring/
+README.md

@@ -65,7 +65,7 @@ class ConsistentHashRing:
 
     @staticmethod
     def _hash(key: str) -> int:
-        """64-bit token from SHA-256 of key string."""
+        """Unsigned 64-bit token; storage uses NUMERIC(20,0), never BIGINT."""
         return int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2 ** 64)
 
     def _vnode_key(self, node_id: str, replica_index: int) -> str:
@@ -123,7 +123,11 @@ class ConsistentHashRing:
                     del self._ring[token]
                     pos = bisect.bisect_left(self._sorted_keys, token)
                     if pos < len(self._sorted_keys) and self._sorted_keys[pos] == token:
-                        freed_ranges.append((token, self._sorted_keys[(pos + 1) % len(self._sorted_keys)] if self._sorted_keys else token))
+                        # This vnode owned (previous_token, token], not
+                        # (token, next_token]. This is diagnostic metadata;
+                        # migration uses record IDs and the new ring instead.
+                        prev_token = self._sorted_keys[pos - 1] if pos else self._sorted_keys[-1]
+                        freed_ranges.append((prev_token, token))
                         self._sorted_keys.pop(pos)
 
             return freed_ranges
@@ -136,7 +140,7 @@ class ConsistentHashRing:
             if not self._sorted_keys:
                 return None
             token = self._hash(key)
-            pos = bisect.bisect_right(self._sorted_keys, token) % len(self._sorted_keys)
+            pos = bisect.bisect_left(self._sorted_keys, token) % len(self._sorted_keys)
             node_id = self._ring[self._sorted_keys[pos]]
             return self._nodes[node_id]
 
@@ -150,7 +154,7 @@ class ConsistentHashRing:
                 return []
 
             token = self._hash(key)
-            pos = bisect.bisect_right(self._sorted_keys, token) % len(self._sorted_keys)
+            pos = bisect.bisect_left(self._sorted_keys, token) % len(self._sorted_keys)
 
             seen_ids: set[str] = set()
             result: list[NodeInfo] = []

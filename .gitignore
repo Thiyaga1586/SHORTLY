@@ -1,18 +1,30 @@
-@"
 # Secrets
 .env
+.env.*
+!.env.example
 
 # TLS certs (regenerate per-environment)
 certs/*.crt
 certs/*.key
+certs/*.pem
 
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Docker volumes data
 postgres-data/
 redis-data/
 
+# Frontend build/dependency output
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
 # Legacy DB file
 legacy/urls.db
+
+# Local database backup artifacts contain users' original URLs.
+backups/
+benchmark/results/

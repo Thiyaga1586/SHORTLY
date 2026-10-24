@@ -1,14 +1,76 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: coordinator
+  - job_name: prometheus
     static_configs:
-      - targets: [coordinator-1:5000, coordinator-2:5000, coordinator-3:5000]
+      - targets: [prometheus:9090]
 
-  - job_name: nodes
+  - job_name: shortly-coordinators
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
     static_configs:
-      - targets: [node-1:5001, node-2:5002, node-3:5003]
+      - targets:
+          - http://coordinator-1:5000/health
+          - http://coordinator-2:5000/health
+          - http://coordinator-3:5000/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: coordinator-metrics
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - coordinator-1:5000
+          - coordinator-2:5000
+          - coordinator-3:5000
+
+  - job_name: shortly-nodes
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://node-1:5001/health
+          - http://node-2:5002/health
+          - http://node-3:5003/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: node-metrics
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - node-1:5001
+          - node-2:5002
+          - node-3:5003
+
+  - job_name: shortly-gateway
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://nginx/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
 
   - job_name: redis
     static_configs:
@@ -17,8 +79,3 @@ scrape_configs:
   - job_name: postgres
     static_configs:
       - targets: [postgres-exporter:9187]
-
-  - job_name: nginx
-    static_configs:
-      - targets: [nginx:80]
-    metrics_path: /nginx-health

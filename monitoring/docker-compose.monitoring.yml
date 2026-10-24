@@ -1,35 +1,53 @@
-version: "3.9"
-
 # Monitoring sidecar — run alongside the main stack:
 #   docker compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
 #
-# Grafana:    http://localhost:3000   (admin / admin)
-# Prometheus: http://localhost:9090
+# Grafana:    http://127.0.0.1:3000   (admin / GRAFANA_ADMIN_PASSWORD)
+# Prometheus: http://127.0.0.1:9090
+# Exporters stay internal to shortly-net; they do not need host ports.
 
 services:
 
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: shortly-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - shortly-net
     restart: unless-stopped
+    depends_on:
+      - blackbox-exporter
+      - redis-exporter
+      - postgres-exporter
 
   grafana:
     image: grafana/grafana:10.4.0
     container_name: shortly-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}"
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/shortly.json:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/shortly.json:ro
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    networks:
+      - shortly-net
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: shortly-blackbox-exporter
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
     networks:
       - shortly-net
     restart: unless-stopped
@@ -39,8 +57,7 @@ services:
     container_name: shortly-redis-exporter
     environment:
       REDIS_ADDR: redis://redis:6379
-    ports:
-      - "9121:9121"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}"
     networks:
       - shortly-net
     restart: unless-stopped
@@ -49,9 +66,7 @@ services:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     container_name: shortly-pg-exporter
     environment:
-      DATA_SOURCE_NAME: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_1?sslmode=disable"
-    ports:
-      - "9187:9187"
+      DATA_SOURCE_NAME: "postgresql://shortly:${SHORTLY_DB_PASSWORD:?set SHORTLY_DB_PASSWORD}@postgres:5432/shortly_node_1?sslmode=disable"
     networks:
       - shortly-net
     restart: unless-stopped
@@ -59,8 +74,3 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
-
-networks:
-  shortly-net:
-    external: true
-    name: shortly_prod_shortly-net

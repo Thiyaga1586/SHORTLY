@@ -1,0 +1,119 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Run unit tests
+        run: python -m pytest tests -m "not integration" -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ADMIN_API_KEY: ci-integration-key
+      POSTGRES_PASSWORD: ci-postgres-superuser-password
+      SHORTLY_DB_PASSWORD: ci-shortly-app-password
+      REDIS_PASSWORD: ci-redis-password
+      SHORTLY_INTEGRATION: "1"
+      SHORTLY_BASE_URL: http://127.0.0.1:5001
+      SHORTLY_ADMIN_API_KEY: ci-integration-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Start integration stack
+        run: docker compose up -d --build --wait coordinator-1 node-1 node-2 node-3
+      - name: Run Docker-stack integration test
+        run: python -m pytest tests -m integration -q
+      - name: Verify PostgreSQL backup and restore in a new test database
+        run: |
+          bash scripts/backup_postgres.sh shortly-postgres backups/ci-verify
+          bash scripts/restore_postgres.sh shortly-postgres backups/ci-verify shortly_node_1 shortly_restore_test_ci
+      - name: Show service state on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=200 coordinator-1 node-1 node-2 node-3 redis postgres db-init
+      - name: Stop integration stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  migration:
+    # CI intentionally exercises the destructive *test* sequence on every
+    # push/PR, but only inside its brand-new, isolated Docker runner/project.
+    # Local migration tests require explicit SHORTLY_MIGRATION_INTEGRATION=1.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ADMIN_API_KEY: ci-migration-admin-key
+      POSTGRES_PASSWORD: ci-migration-postgres-password
+      SHORTLY_DB_PASSWORD: ci-migration-shortly-password
+      REDIS_PASSWORD: ci-migration-redis-password
+      SHORTLY_MIGRATION_INTEGRATION: "1"
+      SHORTLY_MIGRATION_BASE_URL: http://127.0.0.1:5001
+      SHORTLY_MIGRATION_ADMIN_API_KEY: ci-migration-admin-key
+      SHORTLY_MIGRATION_NODE4_HOST: http://node-4:5004
+      SHORTLY_MIGRATION_COMPOSE_PROJECT: shortly-ci-migration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Start fresh four-node disposable stack
+        run: docker compose -p shortly-ci-migration --profile scale up -d --build --wait coordinator-1 node-1 node-2 node-3 node-4
+      - name: Register baseline three nodes
+        run: bash scripts/register_nodes.sh
+      - name: Verify copy-before-switch migration on add and remove
+        run: python -m pytest tests/test_stack_integration.py::test_links_survive_add_node4_then_remove_node2_after_cache_clear -q
+      - name: Show migration logs on failure
+        if: failure()
+        run: |
+          docker compose -p shortly-ci-migration --profile scale ps
+          docker compose -p shortly-ci-migration --profile scale logs --no-color --tail=150
+      - name: Remove disposable integration volumes
+        if: always()
+        run: docker compose -p shortly-ci-migration --profile scale down --volumes --remove-orphans

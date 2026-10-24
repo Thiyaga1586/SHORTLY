@@ -20,9 +20,12 @@ template needs no changes.
 
 import os
 import logging
+import threading
+import time
 from dataclasses import dataclass
 
 import redis
+from shared import redis_health
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +35,11 @@ CACHE_KEY_PFX = "shortly:url:"
 HIT_KEY       = "shortly:cache:hits"
 MISS_KEY      = "shortly:cache:misses"
 EVICT_KEY     = "shortly:cache:evictions"   # Redis LRU evictions (approximate)
+NEGATIVE_SENTINEL = "!shortly:not-found!"
+_shared_client = None
+_snapshot_lock = threading.Lock()
+_last_snapshot = None
+_snapshot_checked_at = 0.0
 
 
 @dataclass
@@ -47,59 +55,101 @@ class CacheSnapshot:
 
 
 def _client() -> redis.Redis:
-    return redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=2)
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = redis.from_url(REDIS_URL, decode_responses=True,
+                                        socket_connect_timeout=1, socket_timeout=2,
+                                        health_check_interval=30)
+    return _shared_client
 
 
 def cache_get(short_id: str) -> str | None:
     """Return the cached URL or None.  Updates hit/miss counters."""
-    r = _client()
-    key = f"{CACHE_KEY_PFX}{short_id}"
-    val = r.get(key)
-    if val:
-        r.incr(HIT_KEY)
-        return val
-    r.incr(MISS_KEY)
-    return None
+    if redis_health.blocked():
+        return None
+    try:
+        r = _client()
+        key = f"{CACHE_KEY_PFX}{short_id}"
+        with r.pipeline(transaction=False) as pipe:
+            pipe.get(key)
+            value = pipe.execute()[0]
+        r.incr(HIT_KEY if value is not None else MISS_KEY)
+        redis_health.recovered()
+        return value
+    except redis.RedisError as exc:
+        redis_health.failed()
+        log.warning("Cache unavailable, falling through to storage: %s", exc)
+        return None
 
 
 def cache_set(short_id: str, url: str, ttl: int = CACHE_TTL) -> None:
-    r = _client()
-    r.setex(f"{CACHE_KEY_PFX}{short_id}", ttl, url)
+    if ttl <= 0 or redis_health.blocked():
+        return
+    try:
+        _client().setex(f"{CACHE_KEY_PFX}{short_id}", min(ttl, CACHE_TTL), url)
+    except redis.RedisError as exc:
+        redis_health.failed()
+        log.warning("Cache write skipped: %s", exc)
 
 
 def cache_invalidate(short_id: str) -> bool:
-    r = _client()
-    deleted = r.delete(f"{CACHE_KEY_PFX}{short_id}")
-    return bool(deleted)
+    if redis_health.blocked():
+        return False
+    try:
+        return bool(_client().delete(f"{CACHE_KEY_PFX}{short_id}"))
+    except redis.RedisError:
+        redis_health.failed()
+        return False
 
 
 def cache_clear() -> None:
+    global _snapshot_checked_at
     r = _client()
-    keys = r.keys(f"{CACHE_KEY_PFX}*")
+    keys = []
+    for key in r.scan_iter(match=f"{CACHE_KEY_PFX}*", count=200):
+        keys.append(key)
+        if len(keys) == 200:
+            r.delete(*keys)
+            keys.clear()
     if keys:
         r.delete(*keys)
     r.set(HIT_KEY, 0)
     r.set(MISS_KEY, 0)
     r.set(EVICT_KEY, 0)
+    with _snapshot_lock:
+        _snapshot_checked_at = 0.0
 
 
 def cache_snapshot(capacity: int) -> CacheSnapshot:
-    r = _client()
-    hits      = int(r.get(HIT_KEY) or 0)
-    misses    = int(r.get(MISS_KEY) or 0)
-    evictions = int(r.get(EVICT_KEY) or 0)
-    size      = len(r.keys(f"{CACHE_KEY_PFX}*"))
-    total     = hits + misses
-    return CacheSnapshot(
-        capacity=capacity,
-        size=size,
-        hits=hits,
-        misses=misses,
-        evictions=evictions,
-        expirations=0,           # Redis TTL handles this transparently
-        hit_rate=round(hits / total, 4) if total else 0.0,
-        fill_ratio=round(size / capacity, 4) if capacity else 0.0,
-    )
+    """At most one SCAN per process/5 s; remain usable during Redis outage."""
+    global _last_snapshot, _snapshot_checked_at
+    with _snapshot_lock:
+        if (_last_snapshot is not None and
+                time.monotonic() - _snapshot_checked_at < 5):
+            return _last_snapshot
+        if redis_health.blocked():
+            return _last_snapshot or CacheSnapshot(capacity, 0, 0, 0, 0, 0, 0.0, 0.0)
+        try:
+            r = _client()
+            with r.pipeline(transaction=False) as pipe:
+                pipe.get(HIT_KEY)
+                pipe.get(MISS_KEY)
+                pipe.get(EVICT_KEY)
+                values = pipe.execute()
+            hits, misses, evictions = [int(v or 0) for v in values]
+            size = sum(1 for _ in r.scan_iter(match=f"{CACHE_KEY_PFX}*", count=200))
+            total = hits + misses
+            _last_snapshot = CacheSnapshot(
+                capacity=capacity, size=size, hits=hits, misses=misses,
+                evictions=evictions, expirations=0,
+                hit_rate=round(hits / total, 4) if total else 0.0,
+                fill_ratio=round(size / capacity, 4) if capacity else 0.0)
+            _snapshot_checked_at = time.monotonic()
+            redis_health.recovered()
+        except redis.RedisError as exc:
+            redis_health.failed()
+            log.warning("Cache statistics unavailable: %s", exc)
+        return _last_snapshot or CacheSnapshot(capacity, 0, 0, 0, 0, 0, 0.0, 0.0)
 
 
 def ping() -> bool:

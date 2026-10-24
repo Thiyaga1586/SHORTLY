@@ -13,8 +13,6 @@
 #      │
 #   [node-1] [node-2] [node-3]   ← storage nodes
 #      │
-#   [pgbouncer]  ← connection pooler
-#      │
 #   [postgres]   ← one DB per node (shortly_node_1/2/3)
 
 x-coordinator-base: &coordinator-base
@@ -22,14 +20,12 @@ x-coordinator-base: &coordinator-base
     context: .
     dockerfile: coordinator/Dockerfile
   environment:
-    CACHE_SIZE:           "2000"
-    CACHE_TTL:            "300"
-    VNODES_PER_NODE:      "150"
-    NODE_TIMEOUT_SEC:     "5"
-    NODE_RETRIES:         "1"
-    REDIS_URL:            "redis://redis:6379/0"
-    ADMIN_API_KEYS:       "${ADMIN_API_KEY:-changeme-set-in-env}"
-    COORDINATOR_REPLICAS: "3"
+    CACHE_SIZE:           "${CACHE_SIZE:-2000}"
+    CACHE_TTL:            "${CACHE_TTL:-300}"
+    VNODES_PER_NODE:      "${VNODES_PER_NODE:-150}"
+    REDIS_URL:            "redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0"
+    ADMIN_API_KEYS:       "${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}"
+    PUBLIC_BASE_URL:      "${PUBLIC_BASE_URL:-https://localhost:9443}"
     PORT:                 "5000"
   depends_on:
     redis:
@@ -38,7 +34,7 @@ x-coordinator-base: &coordinator-base
     - shortly-net
   restart: unless-stopped
   healthcheck:
-    test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+    test: ["CMD", "python", "-m", "coordinator.health"]
     interval: 10s
     timeout: 5s
     retries: 3
@@ -48,13 +44,13 @@ x-node-base: &node-base
     context: .
     dockerfile: node/Dockerfile
   depends_on:
-    pgbouncer:
-      condition: service_started
+    db-init:
+      condition: service_completed_successfully
   networks:
     - shortly-net
   restart: unless-stopped
   healthcheck:
-    test: ["CMD-SHELL", "curl -f http://localhost:$${PORT:-5001}/health || exit 1"]
+    test: ["CMD", "python", "-m", "node.health"]
     interval: 10s
     timeout: 5s
     retries: 3
@@ -68,10 +64,10 @@ services:
     container_name: shortly-postgres
     environment:
       POSTGRES_USER:     postgres
-      POSTGRES_PASSWORD: postgres_secret
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB:       postgres
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - shortly-net
     restart: unless-stopped
@@ -81,44 +77,74 @@ services:
       timeout: 3s
       retries: 10
 
-  pgbouncer:
-    image: edoburu/pgbouncer:v1.25.2-p0
-    container_name: shortly-pgbouncer
-    # NOTE: pgbouncer.ini (mounted below) already defines all 3 logical
-    # databases (shortly_node_1/2/3) and is NOT overwritten by the image's
-    # entrypoint when it already exists at /etc/pgbouncer/pgbouncer.ini.
-    # No DATABASE_URL/POOL_MODE/etc env vars here on purpose — they would
-    # be misleading (DATABASE_URL can only point at ONE db) and unused.
-    volumes:
-      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
-      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
-    ports:
-      - "6432:6432"
+  # Create the least-privilege application role, the three default logical
+  # databases, and the optional scale-profile database after Postgres is
+  # healthy. Credentials come from .env; no password is stored in checked-in SQL.
+  db-init:
+    image: postgres:16-alpine
+    container_name: shortly-db-init
+    user: postgres
+    environment:
+      PGPASSWORD:          "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      SHORTLY_DB_PASSWORD: "${SHORTLY_DB_PASSWORD:?Set SHORTLY_DB_PASSWORD in .env}"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d postgres <<'SQL'
+        \getenv app_password SHORTLY_DB_PASSWORD
+        SELECT format('CREATE ROLE shortly LOGIN PASSWORD %L', :'app_password')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'shortly')
+        \gexec
+        ALTER ROLE shortly WITH LOGIN PASSWORD :'app_password';
+        SELECT 'CREATE DATABASE shortly_node_1 OWNER shortly'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'shortly_node_1')
+        \gexec
+        SELECT 'CREATE DATABASE shortly_node_2 OWNER shortly'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'shortly_node_2')
+        \gexec
+        SELECT 'CREATE DATABASE shortly_node_3 OWNER shortly'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'shortly_node_3')
+        \gexec
+        -- Optional fourth shard for the add/remove-node migration demo.
+        SELECT 'CREATE DATABASE shortly_node_4 OWNER shortly'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'shortly_node_4')
+        \gexec
+        SQL
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - shortly-net
-    restart: unless-stopped
+    restart: "no"
 
   redis:
     image: redis:7-alpine
     container_name: shortly-redis
-    command: >
-      redis-server
-        --maxmemory 256mb
-        --maxmemory-policy allkeys-lru
-        --save 60 1
-        --appendonly yes
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
+    # Keep redis-server as argv[0] so the official entrypoint can repair volume
+    # ownership when upgrading an older root-owned volume, then drop to redis.
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - volatile-lru
+      - --save
+      - "60"
+      - "1"
+      - --appendonly
+      - "yes"
     volumes:
       - redis-data:/data
-    ports:
-      - "6379:6379"
     networks:
       - shortly-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(printenv REDIS_PASSWORD) redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -129,19 +155,19 @@ services:
     <<: *coordinator-base
     container_name: shortly-coordinator-1
     ports:
-      - "5001:5000"   # exposed for direct admin access (register_nodes.sh)
+      - "127.0.0.1:5001:5000"   # local-only admin/bootstrap access
 
   coordinator-2:
     <<: *coordinator-base
     container_name: shortly-coordinator-2
     ports:
-      - "5002:5000"
+      - "127.0.0.1:5002:5000"
 
   coordinator-3:
     <<: *coordinator-base
     container_name: shortly-coordinator-3
     ports:
-      - "5003:5000"
+      - "127.0.0.1:5003:5000"
 
   # ── storage nodes ─────────────────────────────────────────────────────────
 
@@ -149,31 +175,48 @@ services:
     <<: *node-base
     container_name: shortly-node-1
     environment:
+      ADMIN_API_KEYS: "${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}"
       NODE_ID:      "node-1"
       PORT:         "5001"
-      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_1"
+      DATABASE_URL: "postgresql://shortly:${SHORTLY_DB_PASSWORD:?Set SHORTLY_DB_PASSWORD in .env}@postgres:5432/shortly_node_1"
       DB_POOL_MIN:  "2"
-      DB_POOL_MAX:  "20"
+      DB_POOL_MAX:  "3"
 
   node-2:
     <<: *node-base
     container_name: shortly-node-2
     environment:
+      ADMIN_API_KEYS: "${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}"
       NODE_ID:      "node-2"
       PORT:         "5002"
-      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_2"
+      DATABASE_URL: "postgresql://shortly:${SHORTLY_DB_PASSWORD:?Set SHORTLY_DB_PASSWORD in .env}@postgres:5432/shortly_node_2"
       DB_POOL_MIN:  "2"
-      DB_POOL_MAX:  "20"
+      DB_POOL_MAX:  "3"
 
   node-3:
     <<: *node-base
     container_name: shortly-node-3
     environment:
+      ADMIN_API_KEYS: "${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}"
       NODE_ID:      "node-3"
       PORT:         "5003"
-      DATABASE_URL: "postgresql://shortly:shortly_secret@postgres:5432/shortly_node_3"
+      DATABASE_URL: "postgresql://shortly:${SHORTLY_DB_PASSWORD:?Set SHORTLY_DB_PASSWORD in .env}@postgres:5432/shortly_node_3"
       DB_POOL_MIN:  "2"
-      DB_POOL_MAX:  "20"
+      DB_POOL_MAX:  "3"
+
+  # Start explicitly with `docker compose --profile scale up -d node-4`.
+  # Register through the authenticated coordinator only after node-4 is healthy.
+  node-4:
+    <<: *node-base
+    profiles: [scale]
+    container_name: shortly-node-4
+    environment:
+      ADMIN_API_KEYS: "${ADMIN_API_KEY:?Set ADMIN_API_KEY in .env}"
+      NODE_ID:      "node-4"
+      PORT:         "5004"
+      DATABASE_URL: "postgresql://shortly:${SHORTLY_DB_PASSWORD:?Set SHORTLY_DB_PASSWORD in .env}@postgres:5432/shortly_node_4"
+      DB_POOL_MIN:  "2"
+      DB_POOL_MAX:  "3"
 
   # ── frontend (React + TypeScript, built and served via nginx) ────────────
 
@@ -195,8 +238,10 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
     ports:
-      - "8888:80"
-      - "9443:443"
+      # Loopback binding keeps the origin private for the default Cloudflare
+      # Tunnel deployment. Set NGINX_BIND_ADDRESS deliberately for direct ingress.
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8888}:80"
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-9443}:443"
     depends_on:
       - coordinator-1
       - coordinator-2

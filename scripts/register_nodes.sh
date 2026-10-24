@@ -2,14 +2,22 @@
 # scripts/register_nodes.sh  (production v2)
 # -------------------------------------------
 # Registers storage nodes with an internal coordinator (bypasses nginx /admin block).
-# Requires ADMIN_API_KEY env var to match the key set in docker-compose.yml.
+# Reads ADMIN_API_KEY from the environment, or from the project .env file.
 #
-# Usage:  ADMIN_API_KEY=mysecret bash scripts/register_nodes.sh [COORDINATOR_URL]
+# Usage:  bash scripts/register_nodes.sh [COORDINATOR_URL]
 
 set -euo pipefail
 
-COORD="${1:-http://localhost:5001}"          # talk directly to coordinator-1, not nginx
-API_KEY="${ADMIN_API_KEY:?ADMIN_API_KEY env var must be set}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COORD="${1:-http://127.0.0.1:5001}"          # local-only coordinator-1 port
+
+API_KEY="${ADMIN_API_KEY:-}"
+if [[ -z "$API_KEY" && -f "$PROJECT_ROOT/.env" ]]; then
+  API_KEY="$(sed -n 's/^ADMIN_API_KEY=//p' "$PROJECT_ROOT/.env" | tail -n 1)"
+  API_KEY="${API_KEY%\"}"; API_KEY="${API_KEY#\"}"
+  API_KEY="${API_KEY%\'}"; API_KEY="${API_KEY#\'}"
+fi
+[[ -n "$API_KEY" ]] || { echo "ERROR: ADMIN_API_KEY is not set in the environment or .env"; exit 1; }
 
 echo "Registering nodes with coordinator at $COORD ..."
 
@@ -25,7 +33,7 @@ register_node() {
     201) echo "✓ registered" ;;
     409) echo "⚠ already registered" ;;
     401) echo "✗ unauthorized — check ADMIN_API_KEY" && exit 1 ;;
-    *)   echo "✗ failed (HTTP $code)" ;;
+    *)   echo "✗ failed (HTTP $code)"; return 1 ;;
   esac
 }
 
@@ -45,6 +53,6 @@ register_node "node-3" "http://node-3:5003" 1
 
 echo ""
 echo "Ring status:"
-curl -s -H "X-API-Key: $API_KEY" "$COORD/admin/nodes" | python3 -m json.tool
+curl -fsS -H "X-API-Key: $API_KEY" "$COORD/admin/nodes"
 echo ""
-echo "✅ Done. Open https://localhost/ for the dashboard."
+echo "✅ Done. Open the PUBLIC_BASE_URL configured in .env."
